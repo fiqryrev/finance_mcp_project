@@ -8,9 +8,11 @@ from collections import defaultdict
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from utils.gcs_manager import GCSManager
+from utils.spreadsheet_manager import SpreadsheetManager
 
-# Initialize GCS Manager
+# Initialize managers
 gcs_manager = GCSManager()
+spreadsheet_manager = SpreadsheetManager()
 
 # Define conversation states
 AWAITING_DELETE_CONFIRMATION = 1
@@ -331,11 +333,34 @@ async def handle_delete_confirmation(update: Update, context: ContextTypes.DEFAU
         selected_file = context.user_data.get("selected_file")
         
         if selected_file:
-            # Delete the file
+            # Delete the file from GCS
             success = gcs_manager.delete_file(selected_file["blob_name"])
             
             if success:
-                await query.edit_message_text(f"✅ Successfully deleted `{selected_file['original_name']}`.", parse_mode='Markdown')
+                # Also delete from the spreadsheet using the original filename as invoice_id
+                original_name = selected_file["original_name"]
+                # For timestamp__filename format, extract just the filename
+                if "__" in original_name:
+                    parts = original_name.split("__", 1)
+                    if len(parts) == 2:
+                        original_name = parts[1]
+                
+                # Get the GCS filename which is used as invoice_id in the spreadsheet
+                full_name = selected_file.get("blob_name", "").split("/")[-1]
+                
+                # Try to delete from spreadsheet
+                deletion_msg = ""
+                try:
+                    rows_deleted = await spreadsheet_manager.delete_invoice_data(str(user_id), full_name)
+                    if rows_deleted > 0:
+                        deletion_msg = f"\n\nAlso removed {rows_deleted} entries from your financial spreadsheet."
+                except Exception as e:
+                    print(f"Error deleting from spreadsheet: {e}")
+                
+                await query.edit_message_text(
+                    f"✅ Successfully deleted `{selected_file['original_name']}`.{deletion_msg}", 
+                    parse_mode='Markdown'
+                )
             else:
                 await query.edit_message_text(f"❌ Failed to delete `{selected_file['original_name']}`. Please try again later.", parse_mode='Markdown')
         else:
@@ -354,9 +379,23 @@ async def handle_delete_confirmation(update: Update, context: ContextTypes.DEFAU
             })
             
             if result["status"] == "success":
-                await query.edit_message_text(
-                    f"✅ Successfully deleted {result['deleted_count']} files from {date_range.get('description', 'the specified date range')}."
-                )
+                # Try to delete records from the spreadsheet
+                spreadsheet_msg = ""
+                if result.get("deleted_files"):
+                    try:
+                        rows_deleted = 0
+                        for file_info in result["deleted_files"]:
+                            filename = file_info["filename"]
+                            rows = await spreadsheet_manager.delete_invoice_data(str(user_id), filename)
+                            rows_deleted += rows
+                        
+                        if rows_deleted > 0:
+                            spreadsheet_msg = f"\n\nAlso removed {rows_deleted} entries from your financial spreadsheet."
+                    except Exception as e:
+                        print(f"Error syncing spreadsheet deletions: {e}")
+                
+                message = f"✅ Successfully deleted {result['deleted_count']} files from {date_range.get('description', 'the specified date range')}.{spreadsheet_msg}"
+                await query.edit_message_text(message)
             else:
                 await query.edit_message_text(
                     f"❌ Error deleting files: {result['message']}"
@@ -370,9 +409,17 @@ async def handle_delete_confirmation(update: Update, context: ContextTypes.DEFAU
         result = gcs_manager.delete_user_files(user_id, {"all": True})
         
         if result["status"] == "success":
-            await query.edit_message_text(
-                f"✅ Successfully deleted all {result['deleted_count']} of your stored documents."
-            )
+            # Also clear the spreadsheet
+            try:
+                await spreadsheet_manager.delete_all_user_data(str(user_id))
+                await query.edit_message_text(
+                    f"✅ Successfully deleted all {result['deleted_count']} of your stored documents and cleared your financial spreadsheet."
+                )
+            except Exception as e:
+                print(f"Error clearing spreadsheet: {e}")
+                await query.edit_message_text(
+                    f"✅ Successfully deleted all {result['deleted_count']} of your stored documents, but there was an error clearing your spreadsheet."
+                )
         else:
             await query.edit_message_text(
                 f"❌ Error deleting all files: {result['message']}"
@@ -386,6 +433,7 @@ async def handle_delete_confirmation(update: Update, context: ContextTypes.DEFAU
         if duplicates and user_id:
             total_deleted = 0
             kept_files = []
+            deleted_files = []  # Track filenames for spreadsheet deletion
             
             # Process each set of duplicates
             for filename, file_list in duplicates.items():
@@ -399,11 +447,26 @@ async def handle_delete_confirmation(update: Update, context: ContextTypes.DEFAU
                 for file in file_list[1:]:
                     if gcs_manager.delete_file(file["blob_name"]):
                         total_deleted += 1
+                        deleted_files.append(file["blob_name"].split("/")[-1])  # Extract filename
+            
+            # Try to delete entries from spreadsheet
+            spreadsheet_msg = ""
+            if deleted_files:
+                try:
+                    rows_deleted = 0
+                    for filename in deleted_files:
+                        rows = await spreadsheet_manager.delete_invoice_data(str(user_id), filename)
+                        rows_deleted += rows
+                    
+                    if rows_deleted > 0:
+                        spreadsheet_msg = f"\n\nAlso removed {rows_deleted} duplicate entries from your financial spreadsheet."
+                except Exception as e:
+                    print(f"Error deleting duplicates from spreadsheet: {e}")
             
             if total_deleted > 0:
                 await query.edit_message_text(
                     f"✅ Successfully cleaned up {total_deleted} duplicate files.\n\n"
-                    f"Kept the most recent version of each file.",
+                    f"Kept the most recent version of each file.{spreadsheet_msg}",
                     parse_mode='Markdown'
                 )
             else:
@@ -580,6 +643,8 @@ async def handle_duplicate_selection(update: Update, context: ContextTypes.DEFAU
     query = update.callback_query
     await query.answer()
     
+    user_id = context.user_data.get("user_id")
+    
     # Check if user cancelled
     if query.data == "cancel_duplicates":
         await query.edit_message_text("❌ Duplicate cleanup cancelled.")
@@ -667,6 +732,8 @@ async def handle_duplicate_confirmation(update: Update, context: ContextTypes.DE
     query = update.callback_query
     await query.answer()
     
+    user_id = context.user_data.get("user_id")
+    
     # Check if user cancelled
     if query.data == "cancel_duplicates":
         await query.edit_message_text("❌ Duplicate cleanup cancelled.")
@@ -723,15 +790,34 @@ async def handle_duplicate_confirmation(update: Update, context: ContextTypes.DE
         if duplicate_files and keep_file:
             # Delete all duplicates except the one to keep
             deleted_count = 0
+            deleted_filenames = []
+            
             for file in duplicate_files:
                 if file["blob_name"] != keep_file["blob_name"]:
                     if gcs_manager.delete_file(file["blob_name"]):
                         deleted_count += 1
+                        # Extract the filename for spreadsheet deletion
+                        filename = file["blob_name"].split("/")[-1]
+                        deleted_filenames.append(filename)
+            
+            # Delete from spreadsheet
+            spreadsheet_msg = ""
+            if deleted_filenames and user_id:
+                try:
+                    rows_deleted = 0
+                    for filename in deleted_filenames:
+                        rows = await spreadsheet_manager.delete_invoice_data(str(user_id), filename)
+                        rows_deleted += rows
+                    
+                    if rows_deleted > 0:
+                        spreadsheet_msg = f"\n\nAlso removed {rows_deleted} duplicate entries from your financial spreadsheet."
+                except Exception as e:
+                    print(f"Error deleting from spreadsheet: {e}")
             
             if deleted_count > 0:
                 await query.edit_message_text(
                     f"✅ Successfully deleted {deleted_count} duplicates of `{keep_file['original_name']}`.\n\n"
-                    f"Kept the version from {keep_file['timestamp']}.",
+                    f"Kept the version from {keep_file['timestamp']}.{spreadsheet_msg}",
                     parse_mode='Markdown'
                 )
             else:
@@ -751,6 +837,7 @@ async def handle_duplicate_confirmation(update: Update, context: ContextTypes.DE
         if duplicates and user_id:
             total_deleted = 0
             kept_files = []
+            deleted_filenames = []
             
             # Process each set of duplicates
             for filename, file_list in duplicates.items():
@@ -764,11 +851,28 @@ async def handle_duplicate_confirmation(update: Update, context: ContextTypes.DE
                 for file in file_list[1:]:
                     if gcs_manager.delete_file(file["blob_name"]):
                         total_deleted += 1
+                        # Extract the filename for spreadsheet deletion
+                        filename = file["blob_name"].split("/")[-1]
+                        deleted_filenames.append(filename)
+            
+            # Delete from spreadsheet
+            spreadsheet_msg = ""
+            if deleted_filenames:
+                try:
+                    rows_deleted = 0
+                    for filename in deleted_filenames:
+                        rows = await spreadsheet_manager.delete_invoice_data(str(user_id), filename)
+                        rows_deleted += rows
+                    
+                    if rows_deleted > 0:
+                        spreadsheet_msg = f"\n\nAlso removed {rows_deleted} duplicate entries from your financial spreadsheet."
+                except Exception as e:
+                    print(f"Error deleting from spreadsheet: {e}")
             
             if total_deleted > 0:
                 await query.edit_message_text(
                     f"✅ Successfully cleaned up {total_deleted} duplicate files.\n\n"
-                    f"Kept the most recent version of each file.",
+                    f"Kept the most recent version of each file.{spreadsheet_msg}",
                     parse_mode='Markdown'
                 )
             else:

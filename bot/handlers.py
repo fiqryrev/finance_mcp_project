@@ -4,10 +4,11 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from services.ocr_service import OCRService
 from utils.gcs_manager import GCSManager
+from utils.spreadsheet_manager import SpreadsheetManager
 
-# Initialize GCS Manager
+# Initialize managers
 gcs_manager = GCSManager()
-
+spreadsheet_manager = SpreadsheetManager()
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /start command."""
@@ -171,12 +172,21 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 # Default format for generic invoice
                 response = format_generic_invoice(receipt_data)
             
-            # Save data to Google Sheets if needed
-            sheet_url = await save_to_gsheet(receipt_data)
+            # Save to user's Google Sheet
+            await processing_message.edit_text("📊 Saving to your spreadsheet...")
+            
+            # Extract structured invoice data for the spreadsheet
+            invoice_data = spreadsheet_manager.extract_invoice_data(receipt_data, file_name)
+            
+            # Add to user's spreadsheet
+            success = await spreadsheet_manager.add_invoice_data(str(user_id), invoice_data)
+            
+            # Get the spreadsheet URL
+            sheet_url = await spreadsheet_manager.get_user_spreadsheet_url(str(user_id))
             
             # Add sheet link if available
             if sheet_url:
-                response += f"\n\n📊 Data saved to spreadsheet: {sheet_url}"
+                response += f"\n\n📊 Data saved to your spreadsheet: {sheet_url}"
             
             # Add document storage info
             response += f"\n\n🔒 Document saved securely for future reference."
@@ -292,12 +302,26 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 # Default format for generic invoice
                 response = format_generic_invoice(document_data)
             
-            # Save data to Google Sheets if needed
-            sheet_url = await save_to_gsheet(document_data)
+            # Save to user's Google Sheet
+            await status_message.edit_text("📊 Saving to your spreadsheet...")
+            
+            # Get just the filename for use as invoice_id
+            gcs_filename = file_name
+            if '/' in gcs_url:
+                gcs_filename = gcs_url.split('/')[-1]
+            
+            # Extract structured invoice data for the spreadsheet
+            invoice_data = spreadsheet_manager.extract_invoice_data(document_data, gcs_filename)
+            
+            # Add to user's spreadsheet
+            success = await spreadsheet_manager.add_invoice_data(str(user_id), invoice_data)
+            
+            # Get the spreadsheet URL
+            sheet_url = await spreadsheet_manager.get_user_spreadsheet_url(str(user_id))
             
             # Add sheet link if available
             if sheet_url:
-                response += f"\n\n📊 Data saved to spreadsheet: {sheet_url}"
+                response += f"\n\n📊 Data saved to your spreadsheet: {sheet_url}"
             
             # Add document storage info
             response += f"\n\n🔒 Document saved securely for future reference."
@@ -385,17 +409,17 @@ def format_generic_invoice(receipt_data):
     """Format a generic invoice for display in Telegram."""
     response = f"✅ Receipt processed successfully!\n\n"
     response += f"📄 *Document Details*\n"
-    response += f"📆 Date: {receipt_data.get('invoice_date', 'Not found')}\n"
+    response += f"📆 Date: {receipt_data.get('invoice_date', receipt_data.get('date', 'Not found'))}\n"
     response += f"🏪 Merchant: {receipt_data.get('supplier_company_name', receipt_data.get('customer_name', 'Not found'))}\n"
-    response += f"💰 Total: {receipt_data.get('grand_total', receipt_data.get('total_amount', 'Not found'))}\n"
+    response += f"💰 Total: {receipt_data.get('grand_total', receipt_data.get('total_amount', receipt_data.get('total', 'Not found')))}\n"
     
     # Add items if available
     items = receipt_data.get('items', [])
     if items:
         response += "\n📋 Items:\n"
         for item in items:
-            name = item.get('item_product_name', 'Unknown Item')
-            price = item.get('item_total_amount', item.get('item_price_unit', '0.00'))
+            name = item.get('item_product_name', item.get('name', 'Unknown Item'))
+            price = item.get('item_total_amount', item.get('item_price_unit', item.get('price', '0.00')))
             quantity = item.get('item_quantity', '1')
             response += f"- {name} x{quantity}: {price}\n"
     
@@ -444,25 +468,3 @@ def format_purchase_invoice(invoice):
             response += f"- {name} x{quantity}: {price}\n"
     
     return response
-
-async def save_to_gsheet(receipt_data):
-    """
-    Save receipt data to Google Sheets.
-    
-    In a real implementation, this would call the sheets service.
-    For now, it returns a mock URL.
-    
-    Args:
-        receipt_data: The extracted receipt data
-        
-    Returns:
-        URL to the sheet (or None)
-    """
-    # This is a mock implementation - replace with actual GSheet integration
-    # from utils.gsheet_mcp import GSheetModelContextProtocol
-    # gsheet_mcp = GSheetModelContextProtocol()
-    # result = await gsheet_mcp.process_request(f"Save receipt data for {receipt_data.get('document_type')}")
-    # return result.get("spreadsheet_url")
-    
-    # Mock return for now
-    return None

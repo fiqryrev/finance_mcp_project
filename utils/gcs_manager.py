@@ -181,7 +181,7 @@ class GCSManager:
                 - all: If True, delete all files for the user
             
         Returns:
-            Dict with count of deleted files and status
+            Dict with count of deleted files, status, and list of deleted files
         """
         try:
             # Default to empty dict if filter_criteria is None
@@ -236,22 +236,31 @@ class GCSManager:
             
             # Delete the files
             deleted_count = 0
+            deleted_files = []  # Track the deleted files
+            
             for file in files_to_delete:
                 if self.delete_file(file["blob_name"]):
                     deleted_count += 1
+                    deleted_files.append({
+                        "blob_name": file["blob_name"],
+                        "original_name": file["original_name"],
+                        "filename": file["blob_name"].split("/")[-1]  # Extract just the filename
+                    })
             
             return {
                 "deleted_count": deleted_count,
                 "status": "success",
-                "message": f"Successfully deleted {deleted_count} files"
+                "message": f"Successfully deleted {deleted_count} files",
+                "deleted_files": deleted_files
             }
             
         except Exception as e:
-            print(f"Error deleting files for user {user_id}: {str(e)}")
+            print(f"Error deleting files for user {user_id}: {e}")
             return {
                 "deleted_count": 0,
                 "status": "error",
-                "message": f"Error deleting files: {str(e)}"
+                "message": f"Error deleting files: {str(e)}",
+                "deleted_files": []
             }
     
     def get_user_directory_url(self, user_id: str) -> str:
