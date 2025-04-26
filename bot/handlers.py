@@ -5,14 +5,7 @@ import os
 import tempfile
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from services.llm_service import LLMService
 from services.ocr_service import OCRService
-from services.sheets_service import SheetsService
-
-# Initialize services
-llm_service = LLMService()
-ocr_service = OCRService()
-sheets_service = SheetsService()
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /start command."""
@@ -106,25 +99,36 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         
         # Process the image with OCR
         await update.message.reply_text("🔤 Extracting text from your receipt...")
+        
+        # Initialize OCR service and process the image
+        ocr_service = OCRService()
         receipt_data = await ocr_service.process_image(temp_path)
         
-        # Save data to sheets
-        sheet_url = await sheets_service.save_receipt_data(receipt_data)
+        # Check for error in OCR result
+        if "error" in receipt_data:
+            await processing_message.edit_text(f"❌ Error processing the receipt: {receipt_data['error']}")
+            return
         
-        # Prepare the response
-        response = f"✅ Receipt processed successfully!\n\nHere's what I found:\n\n"
-        response += f"📆 Date: {receipt_data.get('date', 'Not found')}\n"
-        response += f"🏪 Merchant: {receipt_data.get('merchant', 'Not found')}\n"
-        response += f"💰 Total: {receipt_data.get('total', 'Not found')}\n"
+        # Extract data based on document type
+        document_type = receipt_data.get("document_type", "invoice")
         
-        if receipt_data.get('items'):
-            response += "\n📋 Items:\n"
-            for item in receipt_data.get('items', []):
-                response += f"- {item.get('name')}: {item.get('price')}\n"
+        # Prepare response based on document type
+        if document_type == "sales_invoice" and "sales_invoices" in receipt_data:
+            invoice = receipt_data["sales_invoices"][0] if receipt_data["sales_invoices"] else {}
+            response = format_sales_invoice(invoice)
+        elif document_type == "purchase_invoice" and "purchase_invoices" in receipt_data:
+            invoice = receipt_data["purchase_invoices"][0] if receipt_data["purchase_invoices"] else {}
+            response = format_generic_invoice(invoice)
+        else:
+            # Default format for generic invoice
+            response = format_generic_invoice(receipt_data)
+        
+        # Save data to Google Sheets if needed
+        sheet_url = await save_to_gsheet(receipt_data)
         
         # Add sheet link if available
         if sheet_url:
-            response += f"\n📊 Data saved to spreadsheet: {sheet_url}"
+            response += f"\n\n📊 Data saved to spreadsheet: {sheet_url}"
         
         # Reply with the extracted information
         await processing_message.edit_text(response)
@@ -153,7 +157,7 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         print(f"Processing document: name={file_name}, file_id={document_file.file_id}, size={document_file.file_size}, ext={file_ext}")
         
         # Check if the file type is supported
-        supported_extensions = ['.pdf', '.jpg', '.jpeg', '.png']
+        supported_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif']
         if file_ext not in supported_extensions:
             await processing_message.edit_text(
                 f"❌ Unsupported file type: {file_ext}\n\n"
@@ -172,27 +176,38 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         status_message = await update.message.reply_text("🔤 Extracting text from your document...")
         
         try:
-            # Process the document - wrapped in try block for specific error handling
+            # Initialize OCR service and process the document
+            ocr_service = OCRService()
             document_data = await ocr_service.process_document(temp_path, file_ext)
             
-            # Save data to sheets (mock implementation for now)
-            # In a real implementation, this would call the sheets service
-            sheet_url = "https://docs.google.com/spreadsheets/d/example"  # Mock URL
+            # Check for error in OCR result
+            if "error" in document_data:
+                await status_message.edit_text(f"❌ Error extracting text: {document_data['error']}")
+                await processing_message.edit_text(
+                    "I'm having trouble processing this document. Please make sure the file is valid and try again."
+                )
+                return
             
-            # Prepare the response
-            response = f"✅ Document processed successfully!\n\nHere's what I found:\n\n"
-            response += f"📆 Date: {document_data.get('date', 'Not found')}\n"
-            response += f"🏪 Merchant/Vendor: {document_data.get('merchant', 'Not found')}\n"
-            response += f"💰 Total: {document_data.get('total', 'Not found')}\n"
+            # Extract data based on document type
+            document_type = document_data.get("document_type", "invoice")
             
-            if document_data.get('items'):
-                response += "\n📋 Items/Details:\n"
-                for item in document_data.get('items', []):
-                    response += f"- {item.get('name')}: {item.get('price')}\n"
+            # Prepare response based on document type
+            if document_type == "sales_invoice" and "sales_invoices" in document_data:
+                invoice = document_data["sales_invoices"][0] if document_data["sales_invoices"] else {}
+                response = format_sales_invoice(invoice)
+            elif document_type == "purchase_invoice" and "purchase_invoices" in document_data:
+                invoice = document_data["purchase_invoices"][0] if document_data["purchase_invoices"] else {}
+                response = format_purchase_invoice(invoice)
+            else:
+                # Default format for generic invoice
+                response = format_generic_invoice(document_data)
+            
+            # Save data to Google Sheets if needed
+            sheet_url = await save_to_gsheet(document_data)
             
             # Add sheet link if available
             if sheet_url:
-                response += f"\n📊 Data saved to spreadsheet: {sheet_url}"
+                response += f"\n\n📊 Data saved to spreadsheet: {sheet_url}"
             
             # Reply with the extracted information
             await processing_message.edit_text(response)
@@ -246,24 +261,12 @@ async def generate_report(query, report_type: str) -> None:
     
     try:
         # Call the sheets service to generate the report
-        report_data = await sheets_service.generate_report(report_type)
+        # In a real implementation, you would connect to your GSheet service here
+        report_data = {}  # Mock data
         
-        # Format the report for Telegram
+        # For now, just send a placeholder message
         response = f"📊 *{report_type.capitalize()} Financial Report*\n\n"
-        
-        # Add summary information
-        response += f"Total Expenses: {report_data.get('total_expenses', 'N/A')}\n"
-        response += f"Period: {report_data.get('period', 'N/A')}\n"
-        
-        # Add category breakdown if available
-        if 'categories' in report_data:
-            response += "\n*Category Breakdown:*\n"
-            for category, amount in report_data.get('categories', {}).items():
-                response += f"• {category}: {amount}\n"
-        
-        # Add link to detailed report if available
-        if 'report_url' in report_data:
-            response += f"\n[View Detailed Report]({report_data.get('report_url')})"
+        response += "This is a placeholder for the financial report. In a real implementation, this would show your financial data."
         
         await query.edit_message_text(response, parse_mode='Markdown')
         
@@ -275,18 +278,54 @@ async def perform_analysis(query, analysis_type: str) -> None:
     await query.edit_message_text(f"Performing {analysis_type} analysis... Please wait.")
     
     try:
-        # Get analysis from LLM service
-        analysis_data = await llm_service.analyze_financial_data(analysis_type)
-        
-        # Format the analysis for Telegram
+        # For now, just send a placeholder message
         response = f"💡 *{analysis_type.capitalize()} Analysis*\n\n"
-        response += analysis_data.get("analysis", "No analysis available")
-        
-        # Add visualizations or links if available
-        if 'visualization_url' in analysis_data:
-            response += f"\n\n[View Visualization]({analysis_data.get('visualization_url')})"
+        response += "This is a placeholder for the financial analysis. In a real implementation, this would show analysis of your financial data."
         
         await query.edit_message_text(response, parse_mode='Markdown')
         
     except Exception as e:
         await query.edit_message_text(f"❌ Error performing analysis: {str(e)}")
+
+def format_generic_invoice(receipt_data):
+    """Format a generic invoice for display in Telegram."""
+    response = f"✅ Receipt processed successfully!\n\n"
+    response += f"📄 *Document Details*\n"
+    response += f"📆 Date: {receipt_data.get('invoice_date', 'Not found')}\n"
+    response += f"🏪 Merchant: {receipt_data.get('supplier_company_name', receipt_data.get('customer_name', 'Not found'))}\n"
+    response += f"💰 Total: {receipt_data.get('grand_total', receipt_data.get('total_amount', 'Not found'))}\n"
+    
+    # Add items if available
+    items = receipt_data.get('items', [])
+    if items:
+        response += "\n📋 Items:\n"
+        for item in items:
+            name = item.get('item_product_name', 'Unknown Item')
+            price = item.get('item_total_amount', item.get('item_price_unit', '0.00'))
+            quantity = item.get('item_quantity', '1')
+            response += f"- {name} x{quantity}: {price}\n"
+    
+    return response
+
+
+async def save_to_gsheet(receipt_data):
+    """
+    Save receipt data to Google Sheets.
+    
+    In a real implementation, this would call the sheets service.
+    For now, it returns a mock URL.
+    
+    Args:
+        receipt_data: The extracted receipt data
+        
+    Returns:
+        URL to the sheet (or None)
+    """
+    # This is a mock implementation - replace with actual GSheet integration
+    # from utils.gsheet_mcp import GSheetModelContextProtocol
+    # gsheet_mcp = GSheetModelContextProtocol()
+    # result = await gsheet_mcp.process_request(f"Save receipt data for {receipt_data.get('document_type')}")
+    # return result.get("spreadsheet_url")
+    
+    # Mock return for now
+    return None
