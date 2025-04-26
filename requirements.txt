@@ -9,3 +9,8 @@ python-dotenv
 apscheduler
 requests
 pytest
+opencv-python
+numpy
+pandas
+matplotlib
+PyMuPDF
