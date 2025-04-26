@@ -378,8 +378,44 @@ async def handle_delete_confirmation(update: Update, context: ContextTypes.DEFAU
                 f"❌ Error deleting all files: {result['message']}"
             )
     
+    # Handle clean all duplicates confirmation
+    elif query.data == "confirm_clean_all_duplicates":
+        # Get all duplicates
+        duplicates = context.user_data.get("duplicates", {})
+        
+        if duplicates and user_id:
+            total_deleted = 0
+            kept_files = []
+            
+            # Process each set of duplicates
+            for filename, file_list in duplicates.items():
+                # Sort by timestamp (newest first)
+                file_list.sort(key=lambda x: x["timestamp"], reverse=True)
+                
+                # Keep the newest file, delete the rest
+                keep_file = file_list[0]
+                kept_files.append(keep_file["original_name"])
+                
+                for file in file_list[1:]:
+                    if gcs_manager.delete_file(file["blob_name"]):
+                        total_deleted += 1
+            
+            if total_deleted > 0:
+                await query.edit_message_text(
+                    f"✅ Successfully cleaned up {total_deleted} duplicate files.\n\n"
+                    f"Kept the most recent version of each file.",
+                    parse_mode='Markdown'
+                )
+            else:
+                await query.edit_message_text(
+                    "❌ No duplicates were deleted. Your files remain unchanged.",
+                    parse_mode='Markdown'
+                )
+        else:
+            await query.edit_message_text("❌ Error: Duplicate information not found.")
+    
     # Handle cancellation
-    elif query.data in ["cancel_delete", "cancel_date_range", "cancel_delete_all"]:
+    elif query.data in ["cancel_delete", "cancel_date_range", "cancel_delete_all", "cancel_duplicates"]:
         await query.edit_message_text("❌ Deletion cancelled.")
     
     return ConversationHandler.END

@@ -113,6 +113,18 @@ def main():
     )
     application.add_handler(delete_all_conv_handler)
     
+    # Handler for finding and deleting duplicates
+    delete_duplicates_conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("deleteduplicates", delete_duplicates_handler)],
+        states={
+            AWAITING_FILE_SELECTION: [CallbackQueryHandler(handle_duplicate_selection)],
+            AWAITING_DUPLICATE_CONFIRMATION: [CallbackQueryHandler(handle_duplicate_confirmation)],
+            AWAITING_DELETE_CONFIRMATION: [CallbackQueryHandler(handle_delete_confirmation)]
+        },
+        fallbacks=[CommandHandler("cancel", lambda u, c: ConversationHandler.END)]
+    )
+    application.add_handler(delete_duplicates_conv_handler)
+    
     # Add message handlers
     application.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     application.add_handler(MessageHandler(filters.Document.ALL, document_handler))
