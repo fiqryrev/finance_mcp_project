@@ -11,6 +11,12 @@ COMMANDS = [
     ('analyze', 'Analyze your financial data'),
     ('budget', 'View and manage your budget'),
     ('settings', 'Configure your preferences'),
+    ('mydata', 'View a list of your stored documents'),
+    ('deletedata', 'Delete a specific document'),
+    ('deletedatarange', 'Delete documents in a date range'),
+    ('deletealldata', 'Delete all your stored documents'),
+    ('deleteduplicates', 'Find and remove duplicate files'),
+    ('datalocation', 'View where your data is stored'),
     ('cancel', 'Cancel the current operation')
 ]
 
@@ -69,12 +75,27 @@ def register_bot_commands(bot):
         analyze_handler
     )
     
+    from bot.data_handlers import (
+        my_data_handler,
+        delete_data_handler,
+        delete_data_range_handler,
+        delete_all_data_handler,
+        delete_duplicates_handler,
+        data_location_handler
+    )
+    
     # Map commands to handlers
     command_handlers = {
         'start': start_handler,
         'help': help_handler,
         'report': report_handler,
         'analyze': analyze_handler,
+        'mydata': my_data_handler,
+        'deletedata': delete_data_handler,
+        'deletedatarange': delete_data_range_handler,
+        'deletealldata': delete_all_data_handler,
+        'deleteduplicates': delete_duplicates_handler,
+        'datalocation': data_location_handler,
     }
     
     # Register all command handlers

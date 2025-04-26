@@ -1,6 +1,3 @@
-"""
-Telegram bot message handlers
-"""
 import os
 import tempfile
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -11,15 +8,23 @@ from utils.gcs_manager import GCSManager
 # Initialize GCS Manager
 gcs_manager = GCSManager()
 
+
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /start command."""
     await update.message.reply_text(
         f"👋 Hello {update.effective_user.first_name}! I'm your financial document assistant. "
         f"Send me a photo of a receipt or invoice, and I'll extract the information and store it.\n\n"
-        f"You can also use the following commands:\n"
-        f"/help - Show help message\n"
-        f"/report - Generate a financial report\n"
-        f"/analyze - Analyze your recent transactions"
+        f"🔍 *Main Commands:*\n"
+        f"• /help - Show detailed help\n"
+        f"• /report - Generate a financial report\n"
+        f"• /analyze - Analyze your transactions\n\n"
+        f"📂 *Data Management:*\n"
+        f"• /mydata - View your stored documents\n"
+        f"• /deletedata - Delete specific documents\n"
+        f"• /deleteduplicates - Find and remove duplicates\n"
+        f"• /datalocation - See where your data is stored\n\n"
+        f"Your data is stored securely and only accessible to you.",
+        parse_mode='Markdown'
     )
 
 async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -29,22 +34,34 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     I can help you manage your financial documents. Here's what I can do:
     
-    📝 *Commands:*
+    📝 *Basic Commands:*
     /start - Start the bot
     /help - Show this help message
     /report - Generate a financial report
     /analyze - Analyze your financial data
     
+    📂 *Data Management:*
+    /mydata - View a list of your stored documents
+    /deletedata - Delete a specific document
+    /deletedatarange - Delete documents within a date range
+    /deletealldata - Delete all your stored documents
+    /deleteduplicates - Find and remove duplicate files
+    /datalocation - View where your data is stored
+    
     📸 *Document Processing:*
     Just send me a photo of your receipt or invoice, and I'll extract the information automatically.
+    You can also upload PDF documents for processing.
     
     📊 *Reports:*
     I can create reports based on your documents. Use /report to generate one.
     
     💡 *Analysis:*
     Get insights about your spending with /analyze.
+    
+    Your data is stored securely and is only accessible to you.
     """
     await update.message.reply_text(help_text, parse_mode='Markdown')
+
 
 async def report_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /report command."""
