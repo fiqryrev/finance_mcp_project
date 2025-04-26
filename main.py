@@ -3,6 +3,7 @@
 MCP Financial Bot for Telegram
 """
 import logging
+import os
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 
 from config.secrets import TELEGRAM_TOKEN
@@ -22,7 +23,16 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+# Create logs directory if it doesn't exist
+os.makedirs('logs', exist_ok=True)
+
+# Set up file logging
+file_handler = logging.FileHandler('logs/bot.log')
+file_handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+
+# Get logger
 logger = logging.getLogger(__name__)
+logger.addHandler(file_handler)
 
 def main():
     """Initialize and start the Telegram bot"""

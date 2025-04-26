@@ -6,6 +6,10 @@ import tempfile
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from services.ocr_service import OCRService
+from utils.gcs_manager import GCSManager
+
+# Initialize GCS Manager
+gcs_manager = GCSManager()
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /start command."""
@@ -91,47 +95,77 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # Get the photo file
         photo_file = await update.message.photo[-1].get_file()  # Get the highest resolution photo
         
+        # Get user ID for GCS folder name
+        user_id = update.effective_user.id
+        
         # Create a temporary file to save the photo
         with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_file:
             temp_path = temp_file.name
             # Download the photo to the temporary file
             await photo_file.download_to_drive(temp_path)
-        
-        # Process the image with OCR
-        await update.message.reply_text("🔤 Extracting text from your receipt...")
-        
-        # Initialize OCR service and process the image
-        ocr_service = OCRService()
-        receipt_data = await ocr_service.process_image(temp_path)
-        
-        # Check for error in OCR result
-        if "error" in receipt_data:
-            await processing_message.edit_text(f"❌ Error processing the receipt: {receipt_data['error']}")
-            return
-        
-        # Extract data based on document type
-        document_type = receipt_data.get("document_type", "invoice")
-        
-        # Prepare response based on document type
-        if document_type == "sales_invoice" and "sales_invoices" in receipt_data:
-            invoice = receipt_data["sales_invoices"][0] if receipt_data["sales_invoices"] else {}
-            response = format_sales_invoice(invoice)
-        elif document_type == "purchase_invoice" and "purchase_invoices" in receipt_data:
-            invoice = receipt_data["purchase_invoices"][0] if receipt_data["purchase_invoices"] else {}
-            response = format_generic_invoice(invoice)
-        else:
-            # Default format for generic invoice
-            response = format_generic_invoice(receipt_data)
-        
-        # Save data to Google Sheets if needed
-        sheet_url = await save_to_gsheet(receipt_data)
-        
-        # Add sheet link if available
-        if sheet_url:
-            response += f"\n\n📊 Data saved to spreadsheet: {sheet_url}"
-        
-        # Reply with the extracted information
-        await processing_message.edit_text(response)
+            
+            # Upload the file to GCS
+            await processing_message.edit_text("📤 Uploading your receipt to secure storage...")
+            
+            # Read the file content
+            with open(temp_path, 'rb') as file:
+                file_content = file.read()
+            
+            # Upload to GCS
+            file_name = f"photo_{photo_file.file_unique_id}.jpg"
+            gcs_url = gcs_manager.upload_file(
+                user_id=user_id,
+                file_name=file_name,
+                file_data=file_content,
+                content_type="image/jpeg"
+            )
+            
+            if not gcs_url:
+                await processing_message.edit_text("❌ Error uploading your receipt. Please try again.")
+                return
+            
+            # Continue with OCR processing
+            await processing_message.edit_text("🔤 Extracting text from your receipt...")
+            
+            # Initialize OCR service and process the image
+            ocr_service = OCRService()
+            receipt_data = await ocr_service.process_image(temp_path)
+            
+            # Add GCS URL to the result
+            if "error" not in receipt_data:
+                receipt_data["document_url"] = gcs_url
+            
+            # Check for error in OCR result
+            if "error" in receipt_data:
+                await processing_message.edit_text(f"❌ Error processing the receipt: {receipt_data['error']}")
+                return
+            
+            # Extract data based on document type
+            document_type = receipt_data.get("document_type", "invoice")
+            
+            # Prepare response based on document type
+            if document_type == "sales_invoice" and "sales_invoices" in receipt_data:
+                invoice = receipt_data["sales_invoices"][0] if receipt_data["sales_invoices"] else {}
+                response = format_sales_invoice(invoice)
+            elif document_type == "purchase_invoice" and "purchase_invoices" in receipt_data:
+                invoice = receipt_data["purchase_invoices"][0] if receipt_data["purchase_invoices"] else {}
+                response = format_generic_invoice(invoice)
+            else:
+                # Default format for generic invoice
+                response = format_generic_invoice(receipt_data)
+            
+            # Save data to Google Sheets if needed
+            sheet_url = await save_to_gsheet(receipt_data)
+            
+            # Add sheet link if available
+            if sheet_url:
+                response += f"\n\n📊 Data saved to spreadsheet: {sheet_url}"
+            
+            # Add document storage info
+            response += f"\n\n🔒 Document saved securely for future reference."
+            
+            # Reply with the extracted information
+            await processing_message.edit_text(response)
         
         # Clean up the temporary file
         os.unlink(temp_path)
@@ -149,7 +183,10 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         # Get the document file
         document_file = await update.message.document.get_file()
         
-        # Get file extension
+        # Get user ID for GCS folder name
+        user_id = update.effective_user.id
+        
+        # Get file name
         file_name = update.message.document.file_name
         file_ext = os.path.splitext(file_name)[1].lower()
         
@@ -171,6 +208,38 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             # Download the document to the temporary file
             await document_file.download_to_drive(temp_path)
             print(f"Document saved to temporary file: {temp_path}")
+            
+            # Upload the file to GCS
+            await processing_message.edit_text("📤 Uploading your document to secure storage...")
+            
+            # Read the file content
+            with open(temp_path, 'rb') as file:
+                file_content = file.read()
+            
+            # Determine content type
+            content_type = None
+            if file_ext == '.pdf':
+                content_type = "application/pdf"
+            elif file_ext in ['.jpg', '.jpeg']:
+                content_type = "image/jpeg"
+            elif file_ext == '.png':
+                content_type = "image/png"
+            elif file_ext in ['.tif', '.tiff']:
+                content_type = "image/tiff"
+            elif file_ext == '.bmp':
+                content_type = "image/bmp"
+            
+            # Upload to GCS
+            gcs_url = gcs_manager.upload_file(
+                user_id=user_id,
+                file_name=file_name,
+                file_data=file_content,
+                content_type=content_type
+            )
+            
+            if not gcs_url:
+                await processing_message.edit_text("❌ Error uploading your document. Please try again.")
+                return
         
         # Process the document
         status_message = await update.message.reply_text("🔤 Extracting text from your document...")
@@ -179,6 +248,10 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             # Initialize OCR service and process the document
             ocr_service = OCRService()
             document_data = await ocr_service.process_document(temp_path, file_ext)
+            
+            # Add GCS URL to the result
+            if "error" not in document_data:
+                document_data["document_url"] = gcs_url
             
             # Check for error in OCR result
             if "error" in document_data:
@@ -194,10 +267,10 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             # Prepare response based on document type
             if document_type == "sales_invoice" and "sales_invoices" in document_data:
                 invoice = document_data["sales_invoices"][0] if document_data["sales_invoices"] else {}
-                response = format_sales_invoice(invoice)
+                response = format_generic_invoice(invoice)
             elif document_type == "purchase_invoice" and "purchase_invoices" in document_data:
                 invoice = document_data["purchase_invoices"][0] if document_data["purchase_invoices"] else {}
-                response = format_purchase_invoice(invoice)
+                response = format_generic_invoice(invoice)
             else:
                 # Default format for generic invoice
                 response = format_generic_invoice(document_data)
@@ -209,8 +282,12 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             if sheet_url:
                 response += f"\n\n📊 Data saved to spreadsheet: {sheet_url}"
             
+            # Add document storage info
+            response += f"\n\n🔒 Document saved securely for future reference."
+            
             # Reply with the extracted information
             await processing_message.edit_text(response)
+            await status_message.delete()
             
         except Exception as ocr_error:
             print(f"Document processing error: {str(ocr_error)}")
@@ -307,6 +384,49 @@ def format_generic_invoice(receipt_data):
     
     return response
 
+def format_sales_invoice(invoice):
+    """Format a sales invoice for display in Telegram."""
+    # Similar to format_generic_invoice but with sales-specific fields
+    response = f"✅ Sales Invoice processed successfully!\n\n"
+    response += f"📄 *Invoice Details*\n"
+    response += f"📆 Date: {invoice.get('invoice_date', 'Not found')}\n"
+    response += f"🔢 Invoice Number: {invoice.get('invoice_number', 'Not found')}\n"
+    response += f"👤 Customer: {invoice.get('customer_name', 'Not found')}\n"
+    response += f"💰 Total: {invoice.get('grand_total', 'Not found')}\n"
+    
+    # Add items if available
+    items = invoice.get('items', [])
+    if items:
+        response += "\n📋 Items:\n"
+        for item in items:
+            name = item.get('item_product_name', 'Unknown Item')
+            price = item.get('item_total_amount', item.get('item_price_unit', '0.00'))
+            quantity = item.get('item_quantity', '1')
+            response += f"- {name} x{quantity}: {price}\n"
+    
+    return response
+
+def format_purchase_invoice(invoice):
+    """Format a purchase invoice for display in Telegram."""
+    # Similar to format_generic_invoice but with purchase-specific fields
+    response = f"✅ Purchase Invoice processed successfully!\n\n"
+    response += f"📄 *Invoice Details*\n"
+    response += f"📆 Date: {invoice.get('invoice_date', 'Not found')}\n"
+    response += f"🔢 Invoice Number: {invoice.get('invoice_number', 'Not found')}\n"
+    response += f"🏢 Supplier: {invoice.get('supplier_company_name', 'Not found')}\n"
+    response += f"💰 Total: {invoice.get('grand_total', 'Not found')}\n"
+    
+    # Add items if available
+    items = invoice.get('items', [])
+    if items:
+        response += "\n📋 Items:\n"
+        for item in items:
+            name = item.get('item_product_name', 'Unknown Item')
+            price = item.get('item_total_amount', item.get('item_price_unit', '0.00'))
+            quantity = item.get('item_quantity', '1')
+            response += f"- {name} x{quantity}: {price}\n"
+    
+    return response
 
 async def save_to_gsheet(receipt_data):
     """

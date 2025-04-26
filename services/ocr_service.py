@@ -26,6 +26,7 @@ from utils.timer import Timer
 from utils.nominal_formatter import NominalFormatter
 from utils.image_processing import ImageProcessor
 from utils.pdf_processing import PDFProcessor
+from utils.gcs_manager import GCSManager
 from prompts.prompt_multitype_invoices import PromptMultitypeInvoices
 
 # Import environment variables
@@ -64,6 +65,9 @@ class OCRService:
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
         self.logger = logging.getLogger(__name__)
+        
+        # Initialize GCS Manager
+        self.gcs_manager = GCSManager()
         
         # Initialize Vertex AI
         try:
@@ -145,6 +149,7 @@ class OCRService:
                           company_id: str = None,
                           client_ip: str = None,
                           file_url: str = None,
+                          document_gcs_url: str = None,
                           processed_ocr_date: str = None,
                           finished_ocr_date: str = None,
                           endpoint: str = None) -> dict:
@@ -156,6 +161,7 @@ class OCRService:
             company_id: Company ID
             client_ip: Client IP address
             file_url: URL of processed file
+            document_gcs_url: GCS URL where the document is stored
             processed_ocr_date: Date when OCR processing started
             finished_ocr_date: Date when OCR processing finished
             endpoint: API endpoint used
@@ -167,6 +173,7 @@ class OCRService:
             'company_id': company_id,
             'client_ip': client_ip,
             'file_url': file_url,
+            'document_gcs_url': document_gcs_url,
             'processed_ocr_date': processed_ocr_date,
             'finished_ocr_date': finished_ocr_date or Timer.get_current_time_iso(),
             'endpoint': endpoint,
@@ -175,12 +182,13 @@ class OCRService:
         return result
 
     ###--------------------- Main Interface Methods ---------------------###
-    async def process_image(self, image_path: str) -> Dict[str, Any]:
+    async def process_image(self, image_path: str, document_gcs_url: str = None) -> Dict[str, Any]:
         """
         Process an image file to extract receipt/invoice data
         
         Args:
             image_path: Path to the image file
+            document_gcs_url: URL where the document is stored in GCS (optional)
             
         Returns:
             Dictionary with extracted data
@@ -196,7 +204,8 @@ class OCRService:
             result = await self.process_document_from_image(
                 image_bytes,
                 document_type=None,  # Auto-detect type
-                file_url=image_path
+                file_url=image_path,
+                document_gcs_url=document_gcs_url
             )
             
             return result
@@ -204,13 +213,14 @@ class OCRService:
             self.logger.error(f"Error processing image: {e}")
             return {"error": f"Failed to process image: {str(e)}"}
 
-    async def process_document(self, document_path: str, file_ext: str) -> Dict[str, Any]:
+    async def process_document(self, document_path: str, file_ext: str, document_gcs_url: str = None) -> Dict[str, Any]:
         """
         Process a document file (image or PDF)
         
         Args:
             document_path: Path to the document file
             file_ext: File extension to determine processing method
+            document_gcs_url: URL where the document is stored in GCS (optional)
             
         Returns:
             Dictionary with extracted data
@@ -227,13 +237,15 @@ class OCRService:
                 return await self.process_document_from_pdf(
                     file_bytes,
                     document_type=None,  # Auto-detect type
-                    file_url=document_path
+                    file_url=document_path,
+                    document_gcs_url=document_gcs_url
                 )
             else:
                 return await self.process_document_from_image(
                     file_bytes,
                     document_type=None,  # Auto-detect type
-                    file_url=document_path
+                    file_url=document_path,
+                    document_gcs_url=document_gcs_url
                 )
         except Exception as e:
             self.logger.error(f"Error processing document: {e}")
@@ -427,6 +439,7 @@ class OCRService:
     async def process_document_from_image(self, 
                                         image_bytes: bytes,
                                         document_type: str = None, 
+                                        document_gcs_url: str = None,
                                         **metadata) -> Dict[str, Any]:
         """
         Process document from image
@@ -434,6 +447,7 @@ class OCRService:
         Args:
             image_bytes: Image content as bytes
             document_type: Type of document to process
+            document_gcs_url: URL where the document is stored in GCS (optional)
             **metadata: Additional metadata to include in result
             
         Returns:
@@ -472,6 +486,10 @@ class OCRService:
             # Format nominal values
             result = NominalFormatter.format_all_nominal_fields(result)
             
+            # Add document GCS URL if available
+            if document_gcs_url:
+                result['document_gcs_url'] = document_gcs_url
+            
             # Add processing time
             processing_time = Timer.calculate_processing_time(start_time)
             result['processing_time_ms'] = processing_time
@@ -480,6 +498,7 @@ class OCRService:
             final_result = self.add_metadata_result(
                 result=result,
                 processed_ocr_date=Timer.get_current_time_iso(),
+                document_gcs_url=document_gcs_url,
                 **metadata
             )
             
@@ -496,6 +515,7 @@ class OCRService:
     async def process_document_from_pdf(self, 
                                       pdf_bytes: bytes,
                                       document_type: str = None,
+                                      document_gcs_url: str = None,
                                       **metadata) -> Dict[str, Any]:
         """
         Process document from PDF
@@ -503,6 +523,7 @@ class OCRService:
         Args:
             pdf_bytes: PDF content as bytes
             document_type: Type of document to process
+            document_gcs_url: URL where the document is stored in GCS (optional)
             **metadata: Additional metadata to include in result
             
         Returns:
@@ -573,6 +594,10 @@ class OCRService:
             # Format nominal values
             result = NominalFormatter.format_all_nominal_fields(result)
             
+            # Add document GCS URL if available
+            if document_gcs_url:
+                result['document_gcs_url'] = document_gcs_url
+            
             # Add processing time
             processing_time = Timer.calculate_processing_time(start_time)
             result['processing_time_ms'] = processing_time
@@ -581,6 +606,7 @@ class OCRService:
             final_result = self.add_metadata_result(
                 result=result,
                 processed_ocr_date=Timer.get_current_time_iso(),
+                document_gcs_url=document_gcs_url,
                 **metadata
             )
             
@@ -671,6 +697,7 @@ class OCRService:
     async def process_multiple_images(self,
                                    image_bytes_list: List[bytes],
                                    document_type: str = None,
+                                   document_gcs_url: str = None,
                                    **metadata) -> Dict[str, Any]:
         """
         Process multiple images as a single document
@@ -678,6 +705,7 @@ class OCRService:
         Args:
             image_bytes_list: List of image contents as bytes
             document_type: Type of document to process
+            document_gcs_url: URL where the document is stored in GCS (optional)
             **metadata: Additional metadata to include in result
             
         Returns:
@@ -734,6 +762,10 @@ class OCRService:
             # Format nominal values
             result = NominalFormatter.format_all_nominal_fields(result)
             
+            # Add document GCS URL if available
+            if document_gcs_url:
+                result['document_gcs_url'] = document_gcs_url
+            
             # Add processing time
             processing_time = Timer.calculate_processing_time(start_time)
             result['processing_time_ms'] = processing_time
@@ -742,6 +774,7 @@ class OCRService:
             final_result = self.add_metadata_result(
                 result=result,
                 processed_ocr_date=Timer.get_current_time_iso(),
+                document_gcs_url=document_gcs_url,
                 **metadata
             )
             
